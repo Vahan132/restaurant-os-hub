@@ -1,0 +1,126 @@
+# -- Restaurant OS -- EDGE hub (admin-facing, PULL-based) ---------------------
+# The canonical file an admin DOWNLOADS and runs. A single on-prem node serving
+# ONE branch: the API in EDGE mode + a volume-persisted local Postgres. No Redis
+# (Socket.IO runs in-process).
+#
+# This file PULLS the published public image from GHCR -- it does NOT build. Any
+# Docker host (Windows/Linux/macOS) can run it with no registry credentials.
+#
+# Admin usage (download + run):
+#   cp .env.edge.example .env.edge   # set secrets; pin EDGE_IMAGE_TAG
+#   docker compose -f docker-compose.edge.yml --env-file .env.edge up -d
+#   # -> boots UNPAIRED into setup mode; pair at http://<host>:3001/setup
+#
+# Update (EDGE-PKG-1 section 2.3):
+#   docker compose -f docker-compose.edge.yml --env-file .env.edge pull
+#   docker compose -f docker-compose.edge.yml --env-file .env.edge up -d
+#   # entrypoint runs `prisma migrate deploy` on boot -> safe pull->migrate->restart
+#
+# Local DEVELOPMENT (build from source instead of pull): layer the build
+# override, which restores `build:` on the api service:
+#   docker compose -f docker-compose.edge.yml -f docker-compose.edge.build.yml \
+#     --env-file .env.edge up -d --build
+services:
+  postgres:
+    image: postgres:16
+    container_name: restaurantos-edge-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${EDGE_DB_USER:-restaurantos}
+      POSTGRES_PASSWORD: ${EDGE_DB_PASSWORD:-restaurantos}
+      POSTGRES_DB: ${EDGE_DB_NAME:-restaurantos}
+    volumes:
+      - edge_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${EDGE_DB_USER:-restaurantos} -d ${EDGE_DB_NAME:-restaurantos}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    # PULL the published public image (EDGE-PKG-1 section 2.2). Pin a known-good
+    # release with EDGE_IMAGE_TAG=edge-vX.Y.Z in .env.edge so "download compose +
+    # run" gets a coordinated compose+image pair. Unset -> tracks `latest`.
+    image: ghcr.io/vahan132/restaurant-os-edge:${EDGE_IMAGE_TAG:-latest}
+    container_name: restaurantos-edge-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      APP_MODE: EDGE
+      PORT: ${PORT:-3001}
+
+      # Edge identity -- DELIVERED BY PAIRING (EDGE-SETUP-3A), not hand-set. Leave
+      # these blank on a fresh hub: it boots UNPAIRED into setup mode, and
+      # POST /setup/pair persists the real values to EDGE_IDENTITY_PATH, which the
+      # entrypoint sources on the next boot (overriding these). Blank-safe.
+      EDGE_ORG_ID: ${EDGE_ORG_ID:-}
+      EDGE_RESTAURANT_ID: ${EDGE_RESTAURANT_ID:-}
+      EDGE_BRANCH_ID: ${EDGE_BRANCH_ID:-}
+      EDGE_NODE_ID: ${EDGE_NODE_ID:-}
+      # Durable path for the persisted pairing identity (on the edge_data volume).
+      EDGE_IDENTITY_PATH: ${EDGE_IDENTITY_PATH:-/data/edge-identity.env}
+
+      # Local Postgres (the compose service above).
+      DATABASE_URL: postgresql://${EDGE_DB_USER:-restaurantos}:${EDGE_DB_PASSWORD:-restaurantos}@postgres:5432/${EDGE_DB_NAME:-restaurantos}?schema=public
+
+      # Tenant auth secrets (tokens minted for this restaurant's users).
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      # Required by env validation though the platform module is excluded on edge.
+      PLATFORM_JWT_ACCESS_SECRET: ${PLATFORM_JWT_ACCESS_SECRET:-edge-unused-platform-access-secret}
+      PLATFORM_JWT_REFRESH_SECRET: ${PLATFORM_JWT_REFRESH_SECRET:-edge-unused-platform-refresh-secret}
+      # Consumer (customer) auth secrets -- REQUIRED by env validation (CX-2), so
+      # the hub must have them to boot even in setup mode. Used if the edge serves
+      # customer-facing ordering. Supply real per-hub values via .env.edge.
+      CONSUMER_JWT_ACCESS_SECRET: ${CONSUMER_JWT_ACCESS_SECRET}
+      CONSUMER_JWT_REFRESH_SECRET: ${CONSUMER_JWT_REFRESH_SECRET}
+
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      PLATFORM_ROOT_DOMAIN: ${PLATFORM_ROOT_DOMAIN:-edge.local}
+
+      # Object storage (MEDIA-1): the edge hub serves media LOCALLY (dev driver) so
+      # it stays secret-free (no R2 credentials on the mini-PC). Uploads persist on
+      # the edge_data volume (/data/media) and survive updates. The dev-driver-in-
+      # production guard is exempted for EDGE (see env.schema.ts).
+      STORAGE_DRIVER: ${STORAGE_DRIVER:-dev}
+      MEDIA_DEV_DIR: ${MEDIA_DEV_DIR:-/data/media}
+      STORAGE_PUBLIC_BASE_URL: ${STORAGE_PUBLIC_BASE_URL:-http://localhost:3001}
+
+      # Pairing: CLOUD_URL is a FIXED image constant (your platform), used pre-
+      # pairing to call {CLOUD_URL}/edge/pair and after to pull snapshots. The node
+      # token + fiscal KEK are DELIVERED BY PAIRING (EDGE-SETUP-3A) and persisted;
+      # leave EDGE_NODE_TOKEN / FISCAL_MASTER_KEK blank on a fresh hub.
+      CLOUD_URL: ${CLOUD_URL:-}
+      EDGE_NODE_TOKEN: ${EDGE_NODE_TOKEN:-}
+      FISCAL_MASTER_KEK: ${FISCAL_MASTER_KEK:-}
+
+      # Config sync (OFF-3): cloud->edge config poll interval (ms, min 30000).
+      CONFIG_SYNC_INTERVAL_MS: ${CONFIG_SYNC_INTERVAL_MS:-120000}
+
+      # Operational push (OFF-4): edge->cloud outbox drain interval (ms, min 5000).
+      EDGE_PUSH_INTERVAL_MS: ${EDGE_PUSH_INTERVAL_MS:-30000}
+
+      # Heartbeat (OFF-8): edge->cloud telemetry/version report interval (30-60s).
+      EDGE_HEARTBEAT_INTERVAL_MS: ${EDGE_HEARTBEAT_INTERVAL_MS:-45000}
+      # Schema-version report override (OFF-8) -- leave blank in production; set to
+      # force a SCHEMA_MISMATCH for testing the update flow.
+      EDGE_SCHEMA_VERSION: ${EDGE_SCHEMA_VERSION:-}
+
+      # OFF-1 smoke seed -- leave false in the OFF-2 flow (snapshot supersedes it).
+      EDGE_SEED: ${EDGE_SEED:-false}
+      EDGE_SEED_OWNER_EMAIL: ${EDGE_SEED_OWNER_EMAIL:-owner@edge.local}
+      EDGE_SEED_OWNER_PASSWORD: ${EDGE_SEED_OWNER_PASSWORD:-ChangeMe123!}
+    ports:
+      - '${PORT:-3001}:${PORT:-3001}'
+    volumes:
+      # EDGE-SETUP-3A: durable store for the persisted pairing identity
+      # (/data/edge-identity.env, written 0600 by POST /setup/pair, sourced by the
+      # entrypoint on boot). Survives container recreation.
+      - edge_data:/data
+
+volumes:
+  edge_pgdata:
+  edge_data:

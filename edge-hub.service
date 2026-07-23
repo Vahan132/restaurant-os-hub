@@ -1,0 +1,26 @@
+# EDGE-PKG-3-UBUNTU - systemd unit for the Restaurant OS Edge Hub.
+#
+# Boot-on-power: this unit runs `docker compose up -d` after the Docker daemon is
+# ready, so the hub returns after a power cut with NO logged-in user (systemd does
+# it) - no auto-login hack like Windows needs. It's belt-and-suspenders with the
+# compose `restart: unless-stopped` policy and also covers the case where the
+# containers were removed (`down`) or never created.
+#
+# install-hub.sh installs this to /etc/systemd/system/edge-hub.service with the
+# real WorkingDirectory patched in, then `systemctl enable --now edge-hub.service`.
+[Unit]
+Description=Restaurant OS Edge Hub (docker compose)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=__INSTALL_DIR__
+ExecStart=/usr/bin/docker compose -f docker-compose.edge.yml --env-file .env.edge up -d
+ExecStop=/usr/bin/docker compose -f docker-compose.edge.yml --env-file .env.edge stop
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
