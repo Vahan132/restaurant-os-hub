@@ -433,6 +433,9 @@ if (-not (Test-Path $envFile)) {
 
 # ---- 4. Firewall (LAN access from tablets/phones) - elevates just this step ---
 Set-HubFirewallRule -Port $Port
+# EDGE-OFFLINE-UI: the bundled proxy serves POS/KDS/Admin on :80 over the LAN,
+# so open that too (offline screens reach the apps here, not just the API).
+Set-HubFirewallRule -Port 80
 
 # ---- 5. Bring the stack up (as the USER - Docker lives in this profile) -------
 Write-Host "Pulling the public image and starting the hub ..." -ForegroundColor Cyan
@@ -456,6 +459,8 @@ Write-Host ""
 Write-Host "Done. The hub is starting." -ForegroundColor Green
 Write-Host "  On this machine : http://localhost:$Port/setup"
 if ($lan) { Write-Host "  From a tablet   : http://$lan`:$Port/setup" }
+Write-Host ""
+if ($lan) { Write-Host "  POS/KDS/Admin   : http://$lan/res/pos  |  http://$lan/res/kds  |  http://$lan/res/admin" }
 Write-Host ""
 Write-Host "Open that page, enter your pairing code, and the hub takes over from there."
 Write-Host ""

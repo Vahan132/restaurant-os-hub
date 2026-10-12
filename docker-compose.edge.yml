@@ -121,6 +121,56 @@ services:
       # entrypoint on boot). Survives container recreation.
       - edge_data:/data
 
+  # ── EDGE-OFFLINE-UI — serve the frontends from the hub (LAN, offline) ────────
+  # Makes the hub a local mirror of the cloud stack so POS/KDS/Admin work with NO
+  # internet: a device opens http://<hub-LAN-IP>/res/{pos,kds,admin} and the UI +
+  # API are both local; data resyncs to the cloud when the link returns. The apps
+  # are SAME-ORIGIN builds (one image runs on cloud and hub). These three images
+  # and the edge-proxy image MUST be PUBLIC on GHCR (no creds on a hub) — see CI.
+  # Open TCP 80 (HTTP_PORT) on the hub's firewall for LAN devices.
+  admin:
+    image: ghcr.io/vahan132/restaurant-os-admin:${EDGE_UI_TAG:-develop}
+    container_name: restaurantos-edge-admin
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+
+  pos:
+    image: ghcr.io/vahan132/restaurant-os-pos:${EDGE_UI_TAG:-develop}
+    container_name: restaurantos-edge-pos
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+
+  kds:
+    image: ghcr.io/vahan132/restaurant-os-kds:${EDGE_UI_TAG:-develop}
+    container_name: restaurantos-edge-kds
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+
+  # Bundled reverse proxy (nginx with /res/* routing baked in). Primary LAN entry
+  # point for the UI. The API also stays published on :${PORT:-3001} for /setup
+  # pairing and direct access.
+  proxy:
+    image: ghcr.io/vahan132/restaurant-os-edge-proxy:${EDGE_IMAGE_TAG:-latest}
+    container_name: restaurantos-edge-proxy
+    restart: unless-stopped
+    ports:
+      - '${HTTP_PORT:-80}:80'
+    depends_on:
+      api:
+        condition: service_started
+      admin:
+        condition: service_started
+      pos:
+        condition: service_started
+      kds:
+        condition: service_started
+
 volumes:
   edge_pgdata:
   edge_data:

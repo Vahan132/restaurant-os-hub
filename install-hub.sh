@@ -110,6 +110,8 @@ fi
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
   log "ufw is active - allowing TCP $PORT ..."
   ufw allow "${PORT}/tcp" >/dev/null || true
+  # EDGE-OFFLINE-UI: the bundled proxy serves POS/KDS/Admin on :80 over the LAN.
+  ufw allow 80/tcp >/dev/null || true
 fi
 
 # ---- 5. Bring the stack up ---------------------------------------------------
@@ -153,5 +155,7 @@ echo
 log "Done. The hub is starting."
 echo "  On this machine : http://localhost:${PORT}/setup"
 [ -n "$LAN_IP" ] && echo "  From a tablet   : http://${LAN_IP}:${PORT}/setup"
+echo
+[ -n "$LAN_IP" ] && echo "  POS/KDS/Admin   : http://${LAN_IP}/res/pos  |  http://${LAN_IP}/res/kds  |  http://${LAN_IP}/res/admin"
 echo
 echo "Open that page, enter your pairing code, and the hub takes over from there."
